@@ -25,7 +25,7 @@ def block_log_lik(side, logit_a):
 def side_log_prior(q_prev, logit_h, logit_a):
     """Log-prior ratio for side given posterior over previous block"""
 
-    return phi(q_prev, phi(-logit_h, logit_a))
+    return phi(phi(q_prev, -logit_h), logit_a)
 
 def side_log_lik(x, w_0, w_1):
     """Log-likelihood ratio for side given single input"""
@@ -99,9 +99,11 @@ class IBLAgent:
         else:
             return y
 
+        
 
+    
 class IBLModel:
-    """Behavior model using Bayesian filtering on IBL task."""
+    """Behavior model using Bayesian filtering on IBL task (estimate all params)."""
     
     def __init__(self):
 
@@ -138,13 +140,16 @@ class IBLModel:
         # Initial parameter valuesj
         theta_0 = np.array([0, 0, 0, 0])
 
-        # Estimate parameters by minimizing log-likelihood
-        res = opt.minimize(
-            IBLModel.neg_LL, 
-            theta_0, 
-            args=(x, s, y), 
-            method='BFGS', 
-            options={'gtol':1e-2}
+        # Estimate parameters by minimizing log-likelihood (basinhopping
+        # necessary for avoiding local minima)
+        res = opt.basinhopping(
+            IBLModel.neg_LL,
+            theta_0,
+            minimizer_kwargs={
+                'method': 'BFGS',
+                'args': (x, s, y)
+            },
+            niter=10
         )
         
         # Set parameter values
@@ -154,6 +159,80 @@ class IBLModel:
         self.a = expit(self.logit_a)
         self.w_0 = res.x[2]
         self.w_1 = res.x[3]
+
+        # Store optimization result
+        self.opt_result = res
+
+    def decision_function(self, x, s):
+        """Compute decision function (log-posterior ratio) for fit model."""
+
+        r, _ = log_pos_full(x, s, self.logit_h, self.logit_a, self.w_0, self.w_1)
+
+        return r
+
+    def predict(self, x, s):
+        """Predict choice for given inputs."""
+
+        return np.sign(self.decision_function(x, s))
+
+    def predict_proba(self, x, s):
+        """Return choice probabilities (y=1) for given inputs."""
+
+        return expit(self.decision_function(x, s))
+
+    
+class IBLModelSimple:
+    """Behavior model using Bayesian filtering on IBL task (fixed a)"""
+    
+    def __init__(self, a):
+        
+        # Side probability
+        self.a = a
+        self.logit_a = logit(a)
+
+        # Hazard rate
+        self.h = None
+        self.logit_h = None
+       
+        # Bias term
+        self.w_0 = None
+        
+        # Weight for contrast
+        self.w_1 = None
+        
+        # Result from optimization
+        self.opt_result = None
+            
+    @staticmethod
+    def neg_LL(theta, a, x, s, y):
+        """Negative log-likelihood function minimized to fit model."""
+    
+        r, _ = log_pos_full(x, s, theta[0], a, theta[1], theta[2])
+
+        y_bin = (y + 1) / 2
+    
+        return np.sum(np.logaddexp(0, r) - y_bin * r)
+
+    def fit(self, x, s, y):
+        """Fit model to inputs, correct sides, and choices."""
+        
+        # Initial parameter values
+        theta_0 = np.array([0, 0, 0])
+
+        # Estimate parameters by minimizing log-likelihood
+        res = opt.minimize(
+            IBLModelSimple.neg_LL, 
+            theta_0, 
+            args=(self.a, x, s, y), 
+            method='BFGS', 
+            options={'gtol':1e-2}
+        )
+        
+        # Set parameter values
+        self.logit_h = res.x[0]
+        self.h = expit(self.logit_h)
+        self.w_0 = res.x[1]
+        self.w_1 = res.x[2]
 
         # Store optimization result
         self.opt_result = res
