@@ -2,5 +2,6 @@
 __pycache__
 
 *.swp
-*.csv
 *.npy
+*.csv
+!data/ibl/trained_sessions.csv
