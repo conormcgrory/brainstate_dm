@@ -5,3 +5,5 @@ __pycache__
 *.npy
 *.csv
 !data/ibl/trained_sessions.csv
+
+bfdm.egg-info/*

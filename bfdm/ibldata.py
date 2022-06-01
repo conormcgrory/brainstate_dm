@@ -7,7 +7,6 @@ import datajoint as dj
 
 def get_session_data(subject_uuid, session_start_time):
     
-    #from ibl_pipeline import reference, subject, action, acquisition, data, behavior, behavior_analyses, ephys, histology
     from ibl_pipeline import behavior, subject
     
     # Select single session

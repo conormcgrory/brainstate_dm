@@ -7,7 +7,7 @@ import pandas as pd
 import datajoint as dj
 
 from ibldata import get_session_data
-from glazemodel import GlazeModel
+from bfdm.glazemodel import GlazeModel
 
 
 SESSION_LIST_FPATH = '../data/ibl/trained_sessions.csv'
