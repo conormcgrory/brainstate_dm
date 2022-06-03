@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import datajoint as dj
 
-from ibldata import get_session_data
+from bfdm.ibldata import get_session_data
 from bfdm.glazemodel import GlazeModel
 
 

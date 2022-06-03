@@ -1,5 +1,7 @@
 """Bayesian filtering for IBL task"""
 
+from dataclasses import dataclass
+
 import numpy as np
 import scipy.optimize as opt
 
@@ -7,249 +9,166 @@ from numpy.random import default_rng
 from scipy.special import logit, expit
 
 
-def phi(a, b):
+@dataclass
+class IBLParams:
+    """Parameters for IBL model."""
+
+    # Logit of "stay rate" (1 - hazard rate)
+    alpha: float
+
+    # Logit of probability that side is same as block
+    beta: float
+
+    # Bias term for log-likelihood
+    bias: float
+
+    # Coefficient term for log-likelihood
+    coef: float
+
+    def hazard_rate(self):
+        """Probability of block switch at any time point."""
+
+        return expit(-self.alpha)
+
+    def p_side(self):
+        """Probability that side is same as block."""
+
+        return expit(self.beta)
+
+    def to_vec(self):
+        """Convert parameters to vector (used for optimization functions)."""
+
+        return np.array([self.alpha, self.beta, self.bias, self.coef])
+    
+    @classmethod
+    def from_vec(cls, pvec):
+        """Extract parameters from vector (used for optimization functions)"""
+
+        return cls(alpha=pvec[0], beta=pvec[1], bias=pvec[2], coef=pvec[3])
+    
+
+def phi(a: float, b: float):
     """Function used to recursively compute prior term"""
 
     return np.logaddexp(0, a + b) - np.logaddexp(a, b)
- 
-def block_log_prior(q_prev, logit_h):
-    """Log-prior ratio for block"""
 
-    return phi(q_prev, -logit_h)
-
-def block_log_lik(side, logit_a):
-    """Log-likelihood ratio for block given side value."""
-
-    return side * logit_a
-
-def side_log_prior(q_prev, logit_h, logit_a):
-    """Log-prior ratio for side given posterior over previous block"""
-
-    return phi(phi(q_prev, -logit_h), logit_a)
-
-def side_log_lik(x, w_0, w_1):
-    """Log-likelihood ratio for side given single input"""
-    
-    return w_0 + w_1 * x
-
-def log_pos_full(x, s, logit_h, logit_a, w_0, w_1):
+def run_filter(x: np.ndarray, s: np.ndarray, params: IBLParams):
     """Recursively compute log-posterior ratios for all time points"""
     
     q = np.full_like(x, np.nan)
     r = np.full_like(x, np.nan)
+    side_log_prior = np.full_like(x, np.nan)
         
     q[-1] = 0
-    r[-1] = 0
 
     for t in range(x.shape[0]):
             
         # Use previous block prior and input to compute log-posterior over s_t
-        r[t] = side_log_lik(x[t], w_0, w_1) + side_log_prior(q[t - 1], logit_h, logit_a)
+        block_log_prior = phi(q[t - 1], params.alpha)
+        side_log_prior[t] = phi(block_log_prior, params.beta)
+        side_log_lik = params.bias + params.coef * x[t] 
+        r[t] = side_log_lik + side_log_prior[t]
             
         # After observing s[t] in feedback, update log-posterior over block
-        q[t] = block_log_lik(s[t], logit_a) + block_log_prior(q[t - 1], logit_h)
+        block_log_lik = s[t] * params.beta
+        q[t] = block_log_lik + block_log_prior
+
+    return r, side_log_prior
+
+def log_pos_side(x: np.ndarray, s: np.ndarray, params: IBLParams):
+    """Compute log-posterior ratio of stimulus sides for all time points."""
+
+    return run_filter(x, s, params)[0]
+
+def neg_LL_session(params: IBLParams, x, s, y):
+    """Negative log-likelihood of single session given parameters."""
+    
+    r = log_pos_side(x, s, params)
+    y_bin = (y + 1) / 2
+    
+    return np.sum(np.logaddexp(0, r) - y_bin * r)
+
+def neg_LL(params: IBLParams, sessions):
+    """Negative log-likelihood of multiple sessions given parameters."""
+
+    nll_vals = np.array([neg_LL_session(params, x, s, y) for x, s, y in sessions])
+
+    return np.sum(nll_vals)
+
+def fit_ibl_session(x, s, y):
+    """Fit IBL model to single session."""
         
+    # Initial parameter values in vector form
+    params_0 = IBLParams(alpha=0, beta=0, bias=0, coef=0)
+    pvec_0 = params_0.to_vec()
 
-    return r, q
+    # NLL function that takes parameters in vector form
+    def nll_vec(pvec, xx, ss, yy):
+        return neg_LL_session(IBLParams.from_vec(pvec), xx, ss, yy)
 
+    # Estimate parameters by minimizing log-likelihood (basinhopping
+    # necessary for avoiding local minima)
+    res = opt.basinhopping(
+        nll_vec,
+        pvec_0, 
+        minimizer_kwargs={
+            'method': 'BFGS',
+            'args': (x, s, y)
+        },
+        niter=10
+    )
 
-class IBLAgent:
-    """Agent implementing Bayesian filtering for IBL task."""
+    return IBLParams.from_vec(res.x)
 
-    def __init__(self, h, a, w_0, w_1, rng=default_rng()):
+def fit_ibl(sessions):
+    """Fit IBL model to multiple sessions."""
         
-        # Hazard rate
-        self.h = h
-        self.logit_h = logit(h)
-        
-        # Side probability
-        self.a = a
-        self.logit_a = logit(a)
+    # Initial parameter values in vector form
+    params_0 = IBLParams(alpha=0, beta=0, bias=0, coef=0)
+    pvec_0 = params_0.to_vec()
 
-        # Bias term
-        self.w_0 = w_0
-        
-        # Weight for contrast
-        self.w_1 = w_1
+    # NLL function that takes parameters in vector form
+    def nll_vec(pvec, sdata):
+        return neg_LL(IBLParams.from_vec(pvec), sdata)
 
-        # Random number generator (for sampling)
-        self.rng = rng
+    # Estimate parameters by minimizing log-likelihood (basinhopping
+    # necessary for avoiding local minima)
+    res = opt.basinhopping(
+        nll_vec,
+        pvec_0,
+        minimizer_kwargs={
+            'method': 'BFGS',
+            'args': (sessions)
+        },
+        niter=10
+    )
 
-    def decision_function(self, x, s):
-        """Compute log-posterior ratio for this agent on given input"""
+    return IBLParams.from_vec(res.x)
 
-        r, _ = log_pos_full(x, s, self.logit_h, self.logit_a, self.w_0, self.w_1)
-        
-        return r
 
-    def sample(self, x, s, return_rq=False):
-        """Sample choices from agent for given input."""
+def sample_behavior(x, s, params, return_rp=False, rng=default_rng()):
+        """Sample choices from IBL agent for given input."""
 
         # Log posterior ratio for inputs
-        r, q = log_pos_full(x, s, self.logit_h, self.logit_a, self.w_0, self.w_1)
+        r, log_prior = run_filter(x, s, params)
 
         # Probability of choosing 1 (right)
         p = expit(r)
 
         # Generate samples
-        y = 2 * self.rng.binomial(1, p) - 1
+        y = 2 * rng.binomial(1, p) - 1
         
-        if return_rq:
-            return y, r, q
+        if return_rp:
+            return y, r, log_prior
         else:
             return y
 
-        
+def predict_choice(x, s, params):
+    """Predict choice for given inputs."""
 
-    
-class IBLModel:
-    """Behavior model using Bayesian filtering on IBL task (estimate all params)."""
-    
-    def __init__(self):
+    return np.sign(log_pos_side(x, s, params))
 
-        # Hazard rate
-        self.h = None
-        self.logit_h = None
+def predict_proba(x, s, params):
+    """Return choice probabilities (y=1) for given inputs."""
 
-        # Side probability
-        self.a = None
-        self.logit_a = None
-        
-        # Bias term
-        self.w_0 = None
-        
-        # Weight for contrast
-        self.w_1 = None
-        
-        # Result from optimization
-        self.opt_result = None
-            
-    @staticmethod
-    def neg_LL(theta, x, s, y):
-        """Negative log-likelihood function minimized to fit model."""
-    
-        r, _ = log_pos_full(x, s, theta[0], theta[1], theta[2], theta[3])
-
-        y_bin = (y + 1) / 2
-    
-        return np.sum(np.logaddexp(0, r) - y_bin * r)
-
-    def fit(self, x, s, y):
-        """Fit model to inputs, correct sides, and choices."""
-        
-        # Initial parameter valuesj
-        theta_0 = np.array([0, 0, 0, 0])
-
-        # Estimate parameters by minimizing log-likelihood (basinhopping
-        # necessary for avoiding local minima)
-        res = opt.basinhopping(
-            IBLModel.neg_LL,
-            theta_0,
-            minimizer_kwargs={
-                'method': 'BFGS',
-                'args': (x, s, y)
-            },
-            niter=10
-        )
-        
-        # Set parameter values
-        self.logit_h = res.x[0]
-        self.h = expit(self.logit_h)
-        self.logit_a = res.x[1]
-        self.a = expit(self.logit_a)
-        self.w_0 = res.x[2]
-        self.w_1 = res.x[3]
-
-        # Store optimization result
-        self.opt_result = res
-
-    def decision_function(self, x, s):
-        """Compute decision function (log-posterior ratio) for fit model."""
-
-        r, _ = log_pos_full(x, s, self.logit_h, self.logit_a, self.w_0, self.w_1)
-
-        return r
-
-    def predict(self, x, s):
-        """Predict choice for given inputs."""
-
-        return np.sign(self.decision_function(x, s))
-
-    def predict_proba(self, x, s):
-        """Return choice probabilities (y=1) for given inputs."""
-
-        return expit(self.decision_function(x, s))
-
-    
-class IBLModelSimple:
-    """Behavior model using Bayesian filtering on IBL task (fixed a)"""
-    
-    def __init__(self, a):
-        
-        # Side probability
-        self.a = a
-        self.logit_a = logit(a)
-
-        # Hazard rate
-        self.h = None
-        self.logit_h = None
-       
-        # Bias term
-        self.w_0 = None
-        
-        # Weight for contrast
-        self.w_1 = None
-        
-        # Result from optimization
-        self.opt_result = None
-            
-    @staticmethod
-    def neg_LL(theta, a, x, s, y):
-        """Negative log-likelihood function minimized to fit model."""
-    
-        r, _ = log_pos_full(x, s, theta[0], a, theta[1], theta[2])
-
-        y_bin = (y + 1) / 2
-    
-        return np.sum(np.logaddexp(0, r) - y_bin * r)
-
-    def fit(self, x, s, y):
-        """Fit model to inputs, correct sides, and choices."""
-        
-        # Initial parameter values
-        theta_0 = np.array([0, 0, 0])
-
-        # Estimate parameters by minimizing log-likelihood
-        res = opt.minimize(
-            IBLModelSimple.neg_LL, 
-            theta_0, 
-            args=(self.a, x, s, y), 
-            method='BFGS', 
-            options={'gtol':1e-2}
-        )
-        
-        # Set parameter values
-        self.logit_h = res.x[0]
-        self.h = expit(self.logit_h)
-        self.w_0 = res.x[1]
-        self.w_1 = res.x[2]
-
-        # Store optimization result
-        self.opt_result = res
-
-    def decision_function(self, x, s):
-        """Compute decision function (log-posterior ratio) for fit model."""
-
-        r, _ = log_pos_full(x, s, self.logit_h, self.logit_a, self.w_0, self.w_1)
-
-        return r
-
-    def predict(self, x, s):
-        """Predict choice for given inputs."""
-
-        return np.sign(self.decision_function(x, s))
-
-    def predict_proba(self, x, s):
-        """Return choice probabilities (y=1) for given inputs."""
-
-        return expit(self.decision_function(x, s))
+    return np.expit(log_pos_side(x, s, params))
