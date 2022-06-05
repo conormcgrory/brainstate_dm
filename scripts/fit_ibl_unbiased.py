@@ -9,7 +9,6 @@ from bfdm.iblmodel import fit_ibl
 
 
 SESSION_LIST_FPATH = '../data/ibl/trained_sessions.csv'
-N_SESSIONS = 1000
 
 
 def main():
