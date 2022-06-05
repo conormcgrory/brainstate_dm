@@ -4,6 +4,7 @@ __pycache__
 *.swp
 *.npy
 *.csv
-!data/ibl/trained_sessions.csv
+!data/trained_sessions.csv
+!data/trained_sessions_test.csv
 
 bfdm.egg-info/*
