@@ -4,9 +4,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import scipy.optimize as opt
-
 from numpy.random import default_rng
 from scipy.special import logit, expit
+
+from bfdm.ibldata import Session
+from bfdm.tasks import IBLTask
 
 
 @dataclass
@@ -45,12 +47,24 @@ class IBLParams:
         """Extract parameters from vector (used for optimization functions)"""
 
         return cls(alpha=pvec[0], beta=pvec[1], bias=pvec[2], coef=pvec[3])
-    
+
+
+def get_optimal_params(task: IBLTask):
+    """Return optimal parameters for given task."""
+
+    alpha = logit(1 - task.hazard_rate)
+    beta = logit(task.alpha)
+    bias = 0
+    coef = 2 / (task.noise ** 2)
+
+    return IBLParams(alpha, beta, bias, coef)
+
 
 def phi(a: float, b: float):
     """Function used to recursively compute prior term"""
 
     return np.logaddexp(0, a + b) - np.logaddexp(a, b)
+
 
 def run_filter(x: np.ndarray, s: np.ndarray, params: IBLParams):
     """Recursively compute log-posterior ratios for all time points"""
@@ -75,10 +89,32 @@ def run_filter(x: np.ndarray, s: np.ndarray, params: IBLParams):
 
     return r, side_log_prior
 
+
 def log_pos_side(x: np.ndarray, s: np.ndarray, params: IBLParams):
     """Compute log-posterior ratio of stimulus sides for all time points."""
 
     return run_filter(x, s, params)[0]
+
+
+def log_prior_side(s: np.ndarray, params: IBLParams):
+
+    # Logit of prior, likelihood, and posterior for block value
+    b_prior = np.full_like(s, np.nan)
+    b_lik = np.full_like(s, np.nan)
+    b_pos = np.full_like(s, np.nan)
+       
+    # Run Bayesian filter on block variable
+    b_pos[-1] = 0
+    for t in range(s.shape[0]):
+        b_prior[t] = phi(b_pos[t - 1], params.alpha)
+        b_lik[t] = s[t] * params.beta
+        b_pos[t] = b_lik[t] + b_prior[t]
+
+    # Use prior over block to compute prior over stimulus side s[t]
+    s_prior = phi(b_prior, params.beta)
+
+    return s_prior
+
 
 def neg_LL_session(params: IBLParams, x, s, y):
     """Negative log-likelihood of single session given parameters."""
@@ -88,10 +124,10 @@ def neg_LL_session(params: IBLParams, x, s, y):
     
     return np.sum(np.logaddexp(0, r) - y_bin * r)
 
-def neg_LL(params: IBLParams, sessions):
+def neg_LL(params: IBLParams, sessions: list[Session]):
     """Negative log-likelihood of multiple sessions given parameters."""
 
-    nll_vals = np.array([neg_LL_session(params, x, s, y) for x, s, y in sessions])
+    nll_vals = np.array([neg_LL_session(params, s.x, s.s, s.y) for s in sessions])
 
     return np.sum(nll_vals)
 
@@ -120,7 +156,7 @@ def fit_ibl_session(x, s, y):
 
     return IBLParams.from_vec(res.x)
 
-def fit_ibl(sessions):
+def fit_ibl(sessions: list[Session]):
     """Fit IBL model to multiple sessions."""
         
     # Initial parameter values in vector form

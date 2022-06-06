@@ -4,11 +4,11 @@ import numpy as np
 import pandas as pd
 import datajoint as dj
 
-from bfdm.ibldata import get_session_data
+from bfdm.ibldata import load_session_list_csv, get_unbiased_data
 from bfdm.iblmodel import fit_ibl
 
 
-SESSION_LIST_FPATH = '../data/ibl/trained_sessions.csv'
+SESSION_LIST_FPATH = 'data/trained_sessions_test.csv'
 
 
 def main():
@@ -19,42 +19,17 @@ def main():
     dj.config['database.password'] = 'sfn2019demo'
     dj.conn()
 
-    # Load list of selected sessions
-    sessions_df = pd.read_csv(SESSION_LIST_FPATH, index_col=0)
+    print('Loading trained sessions...')
+    s_list = load_session_list_csv(SESSION_LIST_FPATH)
+    print('Done.')
 
-    # List for holding extracted session data
-    sessions = []
+    print('Downloading unbiased session data...')
+    sessions = get_unbiased_data(s_list)
+    print('Done.')
 
-    for row in sessions_df.itertuples():
-
-        try:
-
-            # Download data for session
-            df = get_session_data(row.subject_uuid, row.session_start_time) 
-
-            # Select rows from unbiased block at beginning of session
-            df = df[df.block == 0]
-
-            # Load data from DataFrame into numpy array
-            data = df[['correct_side', 'signed_contrast', 'choice']].to_numpy()
-            s = data[:, 0]
-            x = data[:, 1]
-            y = data[:, 2]
-
-            # If first 90 unbiased trials are all present, add to list
-            if x.shape[0] == 90:
-                sessions.append((x, s, y))
-
-        except KeyError as e:
-
-            print('')
-            print(f'KeyError! Missing required field: {str(e)}')
-            print(f'subject_uuid:{row.subject_uuid}')
-            print(f'session_start_time:{row.session_start_time}')
-            print('')
-
-    # Fit IBL model to data
+    print('Fitting IBL model...')
     params = fit_ibl(sessions)
+    print('Done.')
 
     print(params)
 
