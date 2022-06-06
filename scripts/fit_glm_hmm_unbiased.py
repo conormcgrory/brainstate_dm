@@ -63,7 +63,7 @@ def main():
     s_list = load_session_list_csv(SESSION_LIST_FPATH)
     sessions = get_unbiased_data(s_list)
 
-    print('Done.')
+    print(f'Done. Loaded {len(sessions)} sessions.')
 
     print('Fitting GLM-HMM model...')
 
