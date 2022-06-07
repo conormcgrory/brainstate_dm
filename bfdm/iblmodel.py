@@ -8,7 +8,6 @@ from numpy.random import default_rng
 from scipy.special import logit, expit
 
 from bfdm.ibldata import Session
-from bfdm.tasks import IBLTask
 
 
 @dataclass
@@ -28,9 +27,14 @@ class IBLParams:
     coef: float
 
     def hazard_rate(self):
-        """Probability of block switch at any time point."""
+        """Probability of block switching at any time point."""
 
         return expit(-self.alpha)
+
+    def p_stay(self):
+        """Probability of block staying the same at any time point."""
+
+        return expit(self.alpha)
 
     def p_side(self):
         """Probability that side is same as block."""
@@ -49,18 +53,18 @@ class IBLParams:
         return cls(alpha=pvec[0], beta=pvec[1], bias=pvec[2], coef=pvec[3])
 
 
-def get_optimal_params(task: IBLTask):
-    """Return optimal parameters for given task."""
+def get_optimal_params(p_stay: float, p_side: float, noise: float) -> IBLParams:
+    """Return optimal model parameters based on task parameters."""
 
-    alpha = logit(1 - task.hazard_rate)
-    beta = logit(task.alpha)
+    alpha = logit(p_stay)
+    beta = logit(p_side)
     bias = 0
-    coef = 2 / (task.noise ** 2)
+    coef = 2 / (noise ** 2)
 
     return IBLParams(alpha, beta, bias, coef)
 
 
-def phi(a: float, b: float):
+def phi(a, b):
     """Function used to recursively compute prior term"""
 
     return np.logaddexp(0, a + b) - np.logaddexp(a, b)
@@ -182,29 +186,32 @@ def fit_ibl(sessions: list[Session]):
     return IBLParams.from_vec(res.x)
 
 
-def sample_behavior(x, s, params, return_rp=False, rng=default_rng()):
-        """Sample choices from IBL agent for given input."""
+def sample_behavior(x: np.ndarray, s: np.ndarray, 
+        params: IBLParams, return_rp=False, rng=default_rng()):
+    """Sample choices from IBL agent for given input."""
 
-        # Log posterior ratio for inputs
-        r, log_prior = run_filter(x, s, params)
+    # Log posterior ratio for inputs
+    r, log_prior = run_filter(x, s, params)
 
-        # Probability of choosing 1 (right)
-        p = expit(r)
+    # Probability of choosing 1 (right)
+    p = expit(r)
 
-        # Generate samples
-        y = 2 * rng.binomial(1, p) - 1
+    # Generate samples
+    y = 2 * rng.binomial(1, p) - 1
         
-        if return_rp:
-            return y, r, log_prior
-        else:
-            return y
+    if return_rp:
+        return y, r, log_prior
+    else:
+        return y
 
-def predict_choice(x, s, params):
+
+def predict_choice(x: np.ndarray, s: np.ndarray, params: IBLParams) -> np.ndarray:
     """Predict choice for given inputs."""
 
     return np.sign(log_pos_side(x, s, params))
 
-def predict_proba(x, s, params):
+
+def predict_proba(x: np.ndarray, s: np.ndarray, params: IBLParams) -> np.ndarray:
     """Return choice probabilities (y=1) for given inputs."""
 
     return np.expit(log_pos_side(x, s, params))
