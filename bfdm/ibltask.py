@@ -10,8 +10,9 @@ def sample_twopoint(p: float, rng) -> int:
     return rng.choice([1, -1], p=[p, 1 - p])
 
 
-def sample_biased_trials(n_trials: int, p_stay: float, p_side: float,
-        noise: float, rng=default_rng()) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def sample_biased_trials(n_trials: int, p_stay: float,
+        p_side: float, noise: float,
+        rng=default_rng()) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Sample synthetic trials from biased section of IBL task."""
 
     # Block, stimulus side and stimulus data
@@ -25,7 +26,7 @@ def sample_biased_trials(n_trials: int, p_stay: float, p_side: float,
     for i in range(n_trials):
 
         # Block stays the same with probability p_stay
-        b[i] = b[i - 1] * sample_twopoint(p_stay, rng) 
+        b[i] = b[i - 1] * sample_twopoint(p_stay, rng)
 
         # Side is same as block with probability p_side
         s[i] = b[i] * sample_twopoint(p_side, rng)
@@ -36,7 +37,7 @@ def sample_biased_trials(n_trials: int, p_stay: float, p_side: float,
     return b, s, x
 
 
-def sample_unbiased_trials(n_trials: int, noise: float, 
+def sample_unbiased_trials(n_trials: int, noise: float,
         rng=default_rng()) -> tuple[np.ndarray, np.ndarray]:
     """Sample synthetic trials from unbiased section of IBL task."""
 

@@ -7,8 +7,6 @@ import scipy.optimize as opt
 from numpy.random import default_rng
 from scipy.special import logit, expit
 
-from bfdm.ibldata import Session
-
 
 @dataclass
 class IBLParams:
@@ -45,7 +43,7 @@ class IBLParams:
         """Convert parameters to vector (used for optimization functions)."""
 
         return np.array([self.alpha, self.beta, self.bias, self.coef])
-    
+
     @classmethod
     def from_vec(cls, pvec):
         """Extract parameters from vector (used for optimization functions)"""
@@ -92,7 +90,7 @@ def run_block_filter(s: np.ndarray, params: IBLParams):
     b_prior = np.full_like(s, np.nan)
     b_lik = np.full_like(s, np.nan)
     b_pos = np.full_like(s, np.nan)
-       
+
     # Run Bayesian filter on block variable
     b_pos[-1] = 0
     for t in range(s.shape[0]):
@@ -103,13 +101,13 @@ def run_block_filter(s: np.ndarray, params: IBLParams):
     return b_prior, b_lik, b_pos
 
 
-def run_filter(s: np.ndarray, x: np.ndarray, 
+def run_filter(s: np.ndarray, x: np.ndarray,
         params: IBLParams) -> IBLFilterResult:
     """Recursively compute log-posterior ratios for all time points"""
 
     # Run filter on block variable
     b_prior, b_lik, b_pos = run_block_filter(s, params)
-    
+
     # Use block prior and stimulus to compute posterior over side
     s_prior = phi(b_prior, params.beta)
     s_lik = params.bias + params.coef * x
@@ -134,30 +132,30 @@ def log_pos_side(s: np.ndarray, x: np.ndarray, params: IBLParams) -> np.ndarray:
     return res.s_pos
 
 
-def nll_session(params: IBLParams, s :np.ndarray, 
+def nll_session(params: IBLParams, s :np.ndarray,
         x: np.ndarray, y: np.ndarray) -> float:
     """Negative log-likelihood of single session given parameters."""
-    
+
     # Compute log posterior ratio for stimulus side
     s_pos = log_pos_side(s, x, params)
 
     # Convert observed choices from [-1, 1] to [0, 1]
     y_bin = (y + 1) / 2
-    
+
     return np.sum(np.logaddexp(0, s_pos) - y_bin * s_pos)
 
 
-def nll(params: IBLParams, s: list[np.ndarray], 
+def nll(params: IBLParams, s: list[np.ndarray],
         x: list[np.ndarray], y: list[np.ndarray]) -> float:
     """Negative log-likelihood of multiple sessions given parameters."""
 
     return sum(nll_session(params, s[i], x[i], y[i]) for i in range(len(s)))
 
 
-def fit_ibl(s: list[np.ndarray], x: list[np.ndarray], 
+def fit_ibl(s: list[np.ndarray], x: list[np.ndarray],
         y: list[np.ndarray]) -> IBLParams:
     """Fit IBL model to multiple sessions."""
-        
+
     # Initial parameter values in vector form
     params_0 = IBLParams(alpha=0, beta=0, bias=0, coef=0)
     pvec_0 = params_0.to_vec()
@@ -181,7 +179,7 @@ def fit_ibl(s: list[np.ndarray], x: list[np.ndarray],
     return IBLParams.from_vec(res.x)
 
 
-def sample_behavior(s: np.ndarray, x: np.ndarray, params: IBLParams, 
+def sample_behavior(s: np.ndarray, x: np.ndarray, params: IBLParams,
         rng=default_rng()) -> tuple[np.ndarray, IBLFilterResult]:
     """Sample choices from IBL agent for given input."""
 
@@ -189,23 +187,23 @@ def sample_behavior(s: np.ndarray, x: np.ndarray, params: IBLParams,
     f_result = run_filter(s, x, params)
 
     # Probability of choosing 1 (right)
-    p = expit(f_result.s_pos)
+    p: np.ndarray = expit(f_result.s_pos)
 
     # Generate samples
     y = 2 * rng.binomial(1, p) - 1
-        
+
     return y, f_result
 
 
-def predict_choice(s: np.ndarray, x: np.ndarray, 
+def predict_choice(s: np.ndarray, x: np.ndarray,
         params: IBLParams) -> np.ndarray:
     """Predict choice for given inputs."""
 
     return np.sign(log_pos_side(s, x, params))
 
 
-def predict_proba(s: np.ndarray, x: np.ndarray, 
+def predict_proba(s: np.ndarray, x: np.ndarray,
         params: IBLParams) -> np.ndarray:
     """Return choice probabilities (y=1) for given inputs."""
 
-    return np.expit(log_pos_side(s, x, params))
+    return expit(log_pos_side(s, x, params))
