@@ -97,7 +97,7 @@ def log_pos_side(x: np.ndarray, params: GlazeParams) -> np.ndarray:
     return res.s_pos
 
 
-def nll_session(params: GlazeParams, x: np.ndarray, y: np.ndarray):
+def nll_session(params: GlazeParams, x: np.ndarray, y: np.ndarray) -> float:
     """Negative log-likelihood of single session given parameters."""
     
     # Compute log posterior ratio for stimulus side
@@ -146,7 +146,7 @@ def sample_behavior(x: np.ndarray, params: GlazeParams,
     """Sample choices from Glaze model."""
 
     # Run filter on input
-    f_result= run_filter(x, params)
+    f_result = run_filter(x, params)
 
     # Probability of choosing 1 (right)
     p = expit(f_result.s_pos)
