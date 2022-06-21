@@ -3,8 +3,12 @@ __pycache__
 
 *.swp
 *.npy
+*.npz
 *.csv
+
 !data/trained_sessions.csv
 !data/trained_sessions_test.csv
 
 bfdm.egg-info/*
+
+data/raw/ibl_example
