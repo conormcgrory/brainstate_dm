@@ -11,4 +11,4 @@ __pycache__
 
 bfdm.egg-info/*
 
-data/raw/ibl_example
+data/

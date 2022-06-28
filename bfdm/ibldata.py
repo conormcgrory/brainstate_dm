@@ -1,301 +1,205 @@
-"""Functions for accessing IBL data via DataJoint"""
+"""Functions for handling IBL data."""
 
 import os
 from dataclasses import dataclass
+from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
-import pandas as pd
-import datajoint as dj
+from one.api import One
 
 
-class InvalidSessionError(Exception):
-    """Exception thrown when session data is invalid."""
-    pass
+@dataclass
+class RawSessionData:
+    """Raw data from 'ibl.fields' table used for each session."""
+    
+    # EID of session
+    eid: str
+
+    # Probability of left stimulus (determines 'bias' of block)
+    probability_left: np.ndarray
+
+    # Contrast value if stimulus is on left side, NaN otherwise
+    contrast_left: np.ndarray
+
+    # Contrast value if stimulus is on right side, NaN otherwise
+    contrast_right: np.ndarray
+
+    # Animal choice (-1 for right, 1 for left)
+    choice: np.ndarray
+
+    # Feedback given to animal (-1 for punishment, 1 for reward)
+    feedback_type: np.ndarray
+
+    def __eq__(self, other):
+        return (self.eid == other.eid 
+                and np.array_equal(self.probability_left, other.probability_left)
+                and np.array_equal(
+                    self.contrast_left, other.contrast_left, equal_nan=True)
+                and np.array_equal(
+                    self.contrast_right, other.contrast_right, equal_nan=True)
+                and np.array_equal(self.choice, other.choice)
+                and np.array_equal(self.feedback_type, other.feedback_type))
 
 
 @dataclass
 class SessionData:
 
+    # EID of session
+    eid: str
+
+    # Experimental block (-1 for left-biased, 0 for unbiased, +1 for right-biased)
     block: np.ndarray
+
+    # Side that stimulus appears on (-1 for left, +1 for right)
     side: np.ndarray
+
+    # Signed contrast (negative for left stimuli, positive for right)
     contrast: np.ndarray
+
+    # Animal choice (-1 for left, +1 for right)
     choice: np.ndarray
 
-    def to_dataframe(self):
-        return pd.DataFrame({
-            'block': self.block,
-            'side': self.side,
-            'contrast': self.contrast,
-            'choice': self.choice
-        })
-
-    @classmethod
-    def from_dataframe(cls, df):
-        data = df[['block', 'side', 'contrast', 'choice']].to_numpy()
-        return cls(data[:, 0], data[:, 1], data[:, 2], data[:, 3])
+    def __eq__(self, other):
+        return (self.eid == other.eid
+                and np.array_equal(self.block, other.block)
+                and np.array_equal(self.side, other.side)
+                and np.array_equal(self.contrast, other.contrast)
+                and np.array_equal(self.choice, other.choice))
 
 
-def get_session_df(uuid: str, timestamp : str) -> pd.DataFrame:
-    """Download session dataframe from database and add columns."""
-    
-    # Need to already be connected to DataJoint database for imports to work
-    from ibl_pipeline import behavior, subject
-    
-    # Select single session
-    query_session = (
-        behavior.TrialSet
-        * subject.Subject
-        * subject.SubjectLab
-        * subject.SubjectProject 
-        & {'subject_uuid': uuid}
-        & {'session_start_time': timestamp}
+def get_raw_session_data(eid: str, one: One) -> RawSessionData:
+    """Get raw data from ONE database for session with given EID."""
+
+    probability_left = one.load_dataset(eid, '_ibl_trials.probabilityLeft')
+    contrast_left = one.load_dataset(eid, '_ibl_trials.contrastLeft')
+    contrast_right = one.load_dataset(eid, '_ibl_trials.contrastRight')
+    choice = one.load_dataset(eid, '_ibl_trials.choice')
+    feedback_type = one.load_dataset(eid, '_ibl_trials.feedbackType')
+
+    return RawSessionData(
+        eid=eid,
+        probability_left=probability_left,
+        contrast_left=contrast_left,
+        contrast_right=contrast_right,
+        choice=choice,
+        feedback_type=feedback_type
     )
-    
-    # Select all (conclusive) trials from session
-    query_trials = (
-        behavior.TrialSet.Trial 
-        & query_session
-        & 'trial_response_choice !="No Go"'
-    )
-    
-    # Fetch data
-    data_dict = query_trials.fetch(
-        'trial_id',
-        'trial_start_time',
-        'trial_end_time',
-        'trial_response_time',
-        'trial_response_choice', 
-        'trial_stim_contrast_left', 
-        'trial_stim_contrast_right', 
-        'trial_feedback_type',
-        'trial_stim_prob_left',
-        as_dict=True
-    )
-    df = pd.DataFrame(data_dict)
-    
-    # Add columns block, side, contrast, and choice
-    df['contrast'] = df['trial_stim_contrast_right'] - df['trial_stim_contrast_left']
-    df['choice'] = (df['trial_response_choice'] == "CCW") * 2 - 1
-    df['side'] = df['choice'] * df['trial_feedback_type']
-    df['block'] = ((0.5 - df['trial_stim_prob_left']) / 0.3).astype('int64')
-    
-    return df
 
 
-def validate_session_df(df: pd.DataFrame):
+def compute_block(probability_left: np.ndarray) -> np.ndarray:
+    """Block is -1 for p(left) = 0.8, +1 for p(left) = 0.2."""
 
-    # Check that all block values are either -1, +1, or 0
-    if not df.block.isin([-1, 0, 1]).all():
-        raise InvalidSessionError('Trial with invalid block value')
-
-    # Check that first 90 trials all have block = 0
-    if not (df.block[:90] == 0).all():
-        raise InvalidSessionError('Biased trial in first 90 trials')
-
-    # Check that rest of trials all have block = +-1
-    if not df.block[90:].isin([-1, 1]).all():
-        raise InvalidSessionError('Unbiased trial after first 90 trials')
-
-    # Check that all side values are either -1 or +1
-    if not df.side.isin([-1, 1]).all():
-        raise InvalidSessionError('Trial with invalid side value')
-
-    # Check that all choice values are either -1 or +1
-    if not df.choice.isin([-1, 1]).all():
-        raise InvalidSessionError('Trial with invalid choice value')
+    return ((0.5 - probability_left) / 0.3).astype('int64')
 
 
-def extract_session_data(df: pd.DataFrame):
-    """Extract all session data from DataFrame."""
+def compute_side(choice_raw: np.ndarray, feedback_type: np.ndarray) -> np.ndarray:
+    """Side (correct stimulus side) is -1 for left, +1, for right."""
 
-    data = df[['block', 'side', 'contrast', 'choice']].to_numpy()
+    return -choice_raw * feedback_type
+
+
+def compute_contrast(c_right: np.ndarray, c_left: np.ndarray) -> np.ndarray:
+    """Contrast is difference between right and left stimulus contrast."""
+
+    c_right_num = np.nan_to_num(c_right, nan=0)
+    c_left_num = np.nan_to_num(c_left, nan=0)
+
+    return c_right_num - c_left_num
+
+
+def compute_choice(choice_raw: np.ndarray) -> np.ndarray:
+    """Choice is -1 for left, +1 for right (flipped sign of raw choice)."""
+
+    return -choice_raw
+
+
+def get_processed_data(rdata: RawSessionData) -> SessionData:
+    """Extract processed data from entire session."""
+
+    # Compute variables used for model
+    block = compute_block(rdata.probability_left)
+    side = compute_side(rdata.choice, rdata.feedback_type)
+    contrast = compute_contrast(rdata.contrast_right, rdata.contrast_left)
+    choice = compute_choice(rdata.choice)
+
     return SessionData(
-        block=data[:, 0], 
-        side=data[:, 1], 
-        contrast=data[:, 2], 
-        choice=data[:, 3]
+        eid=rdata.eid, 
+        block=block,
+        side=side,
+        contrast=contrast,
+        choice=choice
     )
 
 
-def extract_unbiased_data(df: pd.DataFrame):
-    """Extract unbiased session data from DataFrame."""
+def get_processed_unbiased_data(rdata: RawSessionData) -> SessionData:
+    """Extract processed data from unbiased block of session."""
 
-    data = df[['block', 'side', 'contrast', 'choice']].to_numpy()
+    # Compute variables used for model
+    block = compute_block(rdata.probability_left)
+    side = compute_side(rdata.choice, rdata.feedback_type)
+    contrast = compute_contrast(rdata.contrast_right, rdata.contrast_left)
+    choice = compute_choice(rdata.choice)
+
+    # Only use trials from unbiased block
+    trials_idx = np.where(rdata.probability_left == 0.5)[0]
+ 
     return SessionData(
-        block=data[0:90, 0], 
-        side=data[0:90, 1], 
-        contrast=data[0:90, 2], 
-        choice=data[0:90, 3]
+        eid=rdata.eid, 
+        block=block[trials_idx],
+        side=side[trials_idx],
+        contrast=contrast[trials_idx],
+        choice=choice[trials_idx]
     )
 
 
-def get_session(uuid: str, timestamp : str) -> SessionData:
-    """Download session and return as SessionData object."""
-
-    # Download session DataFrame and add derived columns
-    df = get_session_df(uuid, timestamp)
-
-    # Validate data
-    validate_session_df(df)
-
-    # Extract all session data
-    sdata = extract_session_data(df)
-
-    return sdata
-
-
-def get_unbiased_session(uuid: str, timestamp : str) -> SessionData:
-    """Download unbiased session data and return as SessionData object."""
-
-    # Download session DataFrame and add derived columns
-    df = get_session_df(uuid, timestamp)
-
-    # Validate data
-    validate_session_df(df)
-
-    # Extract unbiased block
-    sdata = extract_unbiased_data(df)
-
-    return sdata
-
-
-def save_session_ids_csv(uuids: list[str], timestamps: list[str], fpath: str):
-    """Save uuids and timestamps of sessions to CSV file."""
-
-    df = pd.DataFrame({
-        'subject_uuid': uuids, 
-        'session_start_time': timestamps
-    })
-    df.to_csv(fpath)
-
-
-def load_session_ids_csv(fpath: str) -> tuple[list[str], list[str]]:
-    """Load uuids and timestamps of sessions from CSV file."""
-
-    # Load dataframe containing session info
-    df = pd.read_csv(fpath, index_col=0)
-
-    # Extract ID information from session info
-    uuids = []
-    timestamps = []
-    for row in df.itertuples():
-        uuids.append(row.subject_uuid)
-        timestamps.append(row.session_start_time)
-
-    return uuids, timestamps
-
-
-def save_session_csv(sdata: SessionData, fpath: str):
-    """Save SessionData object to CSV file."""
-
-    sdata.to_dataframe().to_csv(fpath)
-
-
-def load_session_csv(fpath: str) -> SessionData:
-    """Load SessionData object from CSV file."""
-
-    return SessionData.from_dataframe(pd.read_csv(fpath, index_col=0))
-
-
-def _timestamp_compress(ts: str) -> str:
-    """Convert timestamp from 'YYYY-MM-DD hh:mm:ss' to 'YYYYMMDDThhmmss'"""
-
-    year = ts[0:4]
-    month = ts[5:7]
-    day = ts[8:10]
-    hour = ts[11:13]
-    min = ts[14:16]
-    sec = ts[17:19]
-
-    return f'{year}{month}{day}T{hour}{min}{sec}'
-
-
-def _timestamp_expand(dn: str) -> str:
-    """Convert timestamp from 'YYYYMMDDThhmmss' to 'YYYY-MM-DD hh:mm:ss'"""
-
-    year = dn[0:4]
-    month = dn[4:6]
-    day = dn[6:8]
-    hour = dn[9:11]
-    min = dn[11:13]
-    sec = dn[13:15]
-
-    return f'{year}-{month}-{day} {hour}:{min}:{sec}'
-
-
-def _get_subdir(dirpath: str, uuid: str):
-    """Get full path to subdirectory for given subject uuid."""
-
-    return os.path.join(dirpath, uuid)
-
-
-def _get_fpath(dirpath: str, uuid: str, timestamp: str):
-    """Get full path to file for given session."""
-
-    # Subdirectory for subject
-    subdir = _get_subdir(dirpath, uuid)
-
-    # Compress timestamp to remove hyphen and colon characters
-    fname = _timestamp_compress(timestamp)
-
-    return os.path.join(subdir, fname)
-
-
-def save_sessions(dirpath: str, uuids: list[str], 
-        timestamps: list[str], sdata: list[SessionData]):
+def save_sessions(data: dict[str, list[SessionData]], dirpath: str):
+    """Save data from processed sessions to directory."""
 
     # Create base directory
     os.mkdir(dirpath)
 
-    # Create subdirectories for each subject uuid
-    for uuid in set(uuids):
-        os.mkdir(_get_subdir(dirpath, uuid))
+    for subject in data.keys():
 
-    # Save all sessions to CSV files
-    for i in range(len(uuids)):
-        fpath = _get_fpath(dirpath, uuids[i], timestamps[i])
-        save_session_csv(sdata[i], fpath)
+        # Create subdirectory for subject
+        dpath = os.path.join(dirpath, subject)
+        os.mkdir(dpath)
 
-
-def get_uuids(dirpath: str) -> list[str]:
-    """Get list of unique subject uuids with sessions stored in directory."""
-
-    return os.listdir(dirpath)
-
-
-def get_timestamps(dirpath: str, uuid: str) -> list[str]:
-    """Get list of timestamps for sessions with given uuid."""
-
-    # Get list of CSV filenames in subdirectory for subject uuid
-    fnames = os.listdir(_get_subdir(dirpath, uuid))
-
-    # Strip '.csv' suffix from filenames to get compressed timestamp strings
-    ts_comp = (os.path.splitext(f)[0] for f in fnames)
-
-    # Add hyphens and colons back to get expanded timestamp strings
-    ts_exp = (_timestamp_expand(t) for t in ts_comp)
-
-    return list(ts_exp)
+        # Save all sessions to subject directory
+        for sdata in data[subject]:
+            fname = f'{sdata.eid}.npz'
+            fpath = os.path.join(dpath, fname)
+            np.savez(
+                fpath, 
+                block=sdata.block, 
+                side=sdata.side, 
+                contrast=sdata.contrast, 
+                choice=sdata.choice
+            )
 
 
-def load_session(dirpath: str, uuid: str, timestamp: str):
-    """Load session with uuid and timestamp from directory."""
+def load_sessions(dirpath: str) -> dict[str, list[SessionData]]:
+    """Load data from processed sessions from directory."""
 
-    return load_session_csv(_get_fpath(dirpath, uuid, timestamp))
+    data_dpath = Path(dirpath)
+    if not data_dpath.is_dir():
+        raise ValueError(f'Directory "{dirpath}" not found.')
 
+    data = defaultdict(list)
+    for subject_dpath in data_dpath.iterdir():
+        for session_fpath in subject_dpath.iterdir():
 
-def load_subject_sessions(dirpath: str, uuid: str) -> list[SessionData]:
-    """Load all sessions for subject with given uuid."""
+            # Load session data from .npz file
+            sdict = np.load(session_fpath)
+            sdata = SessionData(
+                eid=session_fpath.stem,
+                block=sdict['block'],
+                side=sdict['side'],
+                contrast=sdict['contrast'],
+                choice=sdict['choice']
+            )
+            
+            # Add data to list of sessions for subject
+            data[subject_dpath.name].append(sdata)
 
-    timestamps = get_timestamps(dirpath, uuid)
-    return [load_session(dirpath, uuid, ts) for ts in timestamps]
-
-
-def load_all_sessions(dirpath: str) -> list[SessionData]:
-    """Load all sessions in directory."""
-
-    all_sessions = []
-    for uuid in get_uuids(dirpath):
-        all_sessions.extend(load_subject_sessions(dirpath, uuid))
-
-    return all_sessions
+    return data
