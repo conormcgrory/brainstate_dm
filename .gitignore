@@ -12,3 +12,4 @@ __pycache__
 bfdm.egg-info/*
 
 data/
+results/

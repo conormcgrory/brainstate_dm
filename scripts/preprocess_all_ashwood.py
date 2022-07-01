@@ -1,4 +1,4 @@
-"""Script for selecting and preprocessing data using Ashwood criteria."""
+"""Select and preprocess all blocks of sessions (Ashwood criteria)."""
 
 from collections import defaultdict
 
@@ -13,7 +13,7 @@ from bfdm import ibldata
 RAW_DATA_DIR = 'data/raw/ibl_example'
 
 # Local directory where processed data is stored
-PROCESSED_DATA_DIR = 'data/processed/ashwood'
+PROCESSED_DATA_DIR = 'data/processed/ashwood_all'
 
 # Number of sessions needed to include subject in dataset
 N_REQ_SESSIONS = 30
@@ -32,7 +32,21 @@ def get_all_session_ids(one: One) -> tuple[list[str], list[str]]:
 
 
 def include_session(rdata: ibldata.RawSessionData) -> bool:
-    """Criteria for including session in dataset."""
+    """Criteria for including session in dataset (from Ashwood et al., 2022).
+
+    The two critera used in the Ashwood et al. paper to determine if a session
+    should be included are:
+        1) The session needs to contain unbiased (p=0.5), left-biased (p=0.8),
+        and right-biased (p=0.2) blocks.
+        2) In the unbiased block (the only data used in the Ashwood paper), 
+        there must be fewer than 10 'no-go' trials, where the animal doesn't 
+        move the wheel.
+    The inclusion criteria implemented here are almost exactly the same as those
+    in the Ashwood paper. The only difference is that, instead of requiring that
+    the animal has <10 'no-go' trials in the unbiased block, we require that it 
+    has zero 'no-go' trials in all blocks (unbiased, left-biased, and 
+    right-biased).
+    """
 
     # Check that session has unbiased (p=0.5) and biased (p=0.2, p=0.8) blocks 
     pvals_data = np.unique(rdata.probability_left)
@@ -40,9 +54,8 @@ def include_session(rdata: ibldata.RawSessionData) -> bool:
     if not np.array_equal(pvals_data, pvals_expected):
         return False
 
-    # Check that unbiased block doesn't have any 'NO-GO' (0) choice values
-    idx_unbiased = np.where(rdata.probability_left == 0.5)[0]
-    cvals_data = np.unique(rdata.choice[idx_unbiased])
+    # Check that session doesn't have any 'NO-GO' (0) choice values
+    cvals_data = np.unique(rdata.choice)
     cvals_expected = np.array([-1, 1])
     if not np.array_equal(cvals_data, cvals_expected):
         return False
@@ -72,7 +85,7 @@ def main():
 
         # If session is eligible, add to data dict
         if include_session(rdata):
-            sdata = ibldata.get_processed_unbiased_data(rdata)
+            sdata = ibldata.get_processed_data(rdata)
             data[subject].append(sdata)
 
     print('Done.')
@@ -87,7 +100,6 @@ def main():
     else:
         raise ValueError('No valid sessions found!')
     print('Done.')
-
 
 
 if __name__ == '__main__':
