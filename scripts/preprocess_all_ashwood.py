@@ -1,5 +1,19 @@
-"""Select and preprocess all blocks of sessions (Ashwood criteria)."""
+"""Select and preprocess all blocks of sessions (Ashwood criteria).
 
+This script takes two arguments: the path to the local ONE database where the
+raw data is stored (-i or --input), and the path to where the preprocessed data
+will be stored (-o or --output). For example, to extract preprocessed sessions
+from a database stored at `data/foo` and store the results at `data/bar`, the 
+command would be:
+```console
+> python scripts/preprocess_all_ashwood -i data/foo -o data/bar
+```
+If the input and output arguments are not given, the script will use default
+values for these arguments.
+"""
+
+import argparse
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -9,14 +23,33 @@ from tqdm import tqdm
 from bfdm import ibldata
 
 
-# Local directory where example IBL data is stored 
-RAW_DATA_DIR = 'data/raw/ibl_example'
-
-# Local directory where processed data is stored
-PROCESSED_DATA_DIR = 'data/processed/ashwood_all'
-
 # Number of sessions needed to include subject in dataset
 N_REQ_SESSIONS = 30
+
+# Default location of ONE database containing raw data
+DEFAULT_INPUT_DIR = 'data/raw/ibl_example'
+
+# Default output directory path
+DEFAULT_OUTPUT_DIR = 'data/preprocessed/ashwood_all'
+
+
+def parse_args():
+
+    parser = argparse.ArgumentParser(
+        description='select and preprocess all blocks (Ashwood criteria).'
+    )
+    parser.add_argument(
+        '-i', '--input', type=str,
+        default=DEFAULT_INPUT_DIR,
+        help='path to local ONE database where raw data is stored.'
+    )
+    parser.add_argument(
+        '-o', '--output', type=str,
+        default=DEFAULT_OUTPUT_DIR,
+        help='path where preprocessed data is stored.'
+    )
+
+    return parser.parse_args()
 
 
 def get_all_session_ids(one: One) -> tuple[list[str], list[str]]:
@@ -65,8 +98,17 @@ def include_session(rdata: ibldata.RawSessionData) -> bool:
 
 def main():
 
+    # Parse program arguments
+    args = parse_args()
+    if not os.path.exists(args.input):
+        print(f'Error: Input directory {args.input} does not exist.')
+        return -1
+    if os.path.exists(args.output):
+        print(f'Error: Output directory {args.output} already exists.')
+        return -2
+
     # Connect to local database
-    one = ONE(mode='local', cache_dir=RAW_DATA_DIR)
+    one = ONE(mode='local', cache_dir=args.input)
 
     # Get list of EIDs of all sessions in database, along with subject IDs
     print('Fetching session IDs...')
@@ -94,9 +136,9 @@ def main():
     data = {s: x for (s, x) in data.items() if len(x) >= N_REQ_SESSIONS}
 
     # Save data to processed data directory 
-    print(f'Saving data to {PROCESSED_DATA_DIR}...')
+    print(f'Saving data to {args.output}...')
     if data:
-        ibldata.save_sessions(data, PROCESSED_DATA_DIR)
+        ibldata.save_sessions(data, args.output)
     else:
         raise ValueError('No valid sessions found!')
     print('Done.')

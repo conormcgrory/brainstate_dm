@@ -157,7 +157,7 @@ def save_sessions(data: dict[str, list[SessionData]], dirpath: str):
     """Save data from processed sessions to directory."""
 
     # Create base directory
-    os.mkdir(dirpath)
+    os.makedirs(dirpath)
 
     for subject in data.keys():
 
