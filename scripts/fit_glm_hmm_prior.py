@@ -1,17 +1,14 @@
-"""Fit GLM-HMM model to all sessions.
-
-The goal of this script is to replicate the results from Ashwood et al.
-
-"""
+"""Fit GLM-HMM model using side prior from IBL model as covariate."""
 
 import argparse
 import os
 import json
 
 import numpy as np
+from scipy.special import logit, expit
 import ssm
 
-from bfdm import ibldata
+from bfdm import ibldata, iblmodel
 
 # Scale factor used for contrast values, currently set to reciprocal of standard
 # deviation of contrast values (Because constrast values are uniform 
@@ -41,16 +38,22 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_model_inputs(x: np.ndarray) -> np.ndarray:
-    """Modify inputs for GLM-HMM (need to add column of ones)."""
+def get_model_inputs(contrast: np.ndarray, prior: np.ndarray) -> np.ndarray:
+    """Modify inputs for GLM-HMM (need to add column of ones).
+
+    In output array x, first column (x[:, 0]) is scaled contrast, second column
+    (x[:, 1]) is side prior, and third column (x[:, 2]) is array of ones, to
+    allow bias term to be fit.
+    """
 
     # Scale contrast values by dividing by standard deviation
-    x_scl = x * SCL_FACTOR
+    contrast_scl = contrast * SCL_FACTOR
 
-    x_mod = np.ones((x.shape[0], 2))
-    x_mod[:, 0] = x_scl
+    x = np.ones((contrast.shape[0], 3))
+    x[:, 0] = contrast_scl
+    x[:, 1] = prior
 
-    return x_mod
+    return x
 
 
 def get_model_choices(y: np.ndarray) -> np.ndarray:
@@ -77,7 +80,11 @@ def params_to_dict(params) -> dict:
     pdict = {}
     for i in range(len(params)):
         k = f'state {i}'
-        v = dict(bias=params[i][0][1], coef=params[i][0][0])
+        v = dict(
+            bias=params[i][0][2], 
+            prior=params[i][0][1], 
+            coef=params[i][0][0]
+        )
         pdict[k] = v
 
     return pdict
@@ -105,12 +112,39 @@ def main():
 
     print('Fitting GLM-HMM model...')
 
-    # Convert inputs and choices to GLM-HMM format
-    inputs = [get_model_inputs(s.contrast) for s in sessions]
-    choices = [get_model_choices(s.choice) for s in sessions]
+    # Use ground truth stay rate and side probability for prior computation
+    p_stay = 50 / 51
+    p_side = 0.8
 
+    # NOTE: `bias` and `coef` parameters don't get used, so their values don't
+    # matter (need to change this at some point)
+    ibl_params = iblmodel.IBLParams(
+        alpha=logit(p_stay), 
+        beta=logit(p_side), 
+        bias=0.0,
+        coef=1.0
+    )
+
+    # Use each session to create inputs and choices for GLM-HMM model
+    inputs = []
+    choices = []
+    for s in sessions:
+
+        # Compute side prior
+        s_prior = iblmodel.log_prior_side(s.side, ibl_params)
+
+        # Create input array for GLM-HMM using contrast and side prior
+        s_input = get_model_inputs(s.contrast, s_prior)
+
+        # Convert choices to GLM-HMM format
+        s_choice = get_model_choices(s.choice)
+
+        inputs.append(s_input)
+        choices.append(s_choice)
+
+    # Fit GLM-HMM model
     glm_hmm = ssm.HMM(
-        args.nstates, 1, 2, 
+        args.nstates, 1, 3, 
         observations="input_driven_obs", 
         observation_kwargs=dict(C=2),
         transitions="standard"
